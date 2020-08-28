@@ -8,43 +8,53 @@ require 'addressable/uri'
 require 'etc'
 
 uname = Etc.getlogin
+download_dir = "/Users/#{uname}/Downloads"
 
 REFERER = 'http://scholar.google.com'
 PREFIX = 'https://www.academia.edu/download'
 OPEN_URI_OPTIONS = {"Referer" => REFERER, :allow_redirections => :all}
+MAX_RETRIES = 5
 
-download_dir = "/Users/#{uname}/Downloads"
 
 ARGV.each do |academia_url|
+  uri = Addressable::URI.parse(academia_url).normalize.to_s
+  if URI(uri).host.nil? || URI(uri).path.nil? || URI(uri).path.empty? || !%{http https}.include?(URI(uri).scheme)
+    $stderr.puts "Error parsing URL: #{academia_url}"
+    exit 1
+  end
+  filename = "#{URI(uri).path.split('/').last[0..250]}.pdf"
   doc = nil
-  tries = 0
-  begin
-    uri = Addressable::URI.parse(academia_url).normalize.to_s
-    doc = Nokogiri::HTML(URI.open(uri))
-  rescue OpenURI::HTTPError => e
-    tries += 1
-    if tries < 5
-      sleep(5)
-      retry
-    else
-      $stderr.puts 'URL problem:\n' + e.inspect
-      exit
-    end
-  end
-  begin
-	download_url = doc.css('a.js-swp-download-button').first['href']
-	download_id = download_url.split('/')[-2]
-	filename = "#{URI(uri).path.split('/').last[0..250]}.pdf"
-	url = "#{PREFIX}/#{download_id}/#{filename}"
-  rescue
-    $stderr.puts "Problem with the download. Here's what I was trying to get:\n<#{url}>"
-    exit
-  end
-#   $stderr.puts "Resolved download URL: #{url}"
   if File.exist?("#{download_dir}/#{filename}")
-    $stderr.puts "File already exists" #", skipping:\n#{filename}"
+    $stderr.puts "File already exists, skipping:\n#{filename}"
   else
-    IO.copy_stream(open(url, OPEN_URI_OPTIONS), "#{download_dir}/#{filename}")
-#     $stderr.puts "Downloaded #{filename}"
+    if URI(uri).host.split('.')[-2..-1].join('.') != 'academia.edu'
+      $stderr.puts "URL host must be 'academia.edu', error with URL: #{academia_url}"
+      exit 1
+    end
+    retries = 0
+    begin
+      doc = Nokogiri::HTML(URI.open(uri))
+    rescue OpenURI::HTTPError => e
+      $stderr.puts e.inspect
+      retries += 1
+      if retries < MAX_RETRIES
+        sleep(1)
+        retry
+      else
+        $stderr.puts "Max retries (= #{MAX_RETRIES}) reached, exiting after trying to open URL: #{academia_url}"
+        exit 1
+      end
+    end
+	begin
+      download_url = doc.css('a.js-swp-download-button').first['href']
+      download_id = download_url.split('/')[-2]
+      url = "#{PREFIX}/#{download_id}/#{filename}"
+#       $stderr.puts "Resolved download URL: #{url}"
+      IO.copy_stream(open(url, OPEN_URI_OPTIONS), "#{download_dir}/#{filename}")
+#       $stderr.puts "Downloaded #{filename}"
+	rescue StandardError => e
+      $stderr.puts "Error parsing/downloading file for URL #{url}: #{e.inspect}"
+	  exit 1
+	end
   end
 end
